@@ -21,6 +21,7 @@ class Evidence(Base):
     size_bytes: Mapped[int | None] = mapped_column(nullable=True)
     acquired_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     acquired_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    acquired_md5: Mapped[str | None] = mapped_column(String(32), nullable=True)
     integrity_verified: Mapped[bool | None] = mapped_column(nullable=True)
     integrity_status: Mapped[str] = mapped_column(String(30), default="PENDING")
     acquired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

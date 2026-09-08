@@ -24,7 +24,7 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     from app.models import analysis  # noqa: F401
-    from app.models import audit, case, custody, evidence, user  # noqa: F401
+    from app.models import audit, case, custody, evidence, report, user  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _migrate_existing_schema()
@@ -42,6 +42,7 @@ def _migrate_existing_schema() -> None:
             "size_bytes": "INTEGER",
             "acquired_path": "TEXT",
             "acquired_sha256": "VARCHAR(64)",
+            "acquired_md5": "VARCHAR(32)",
             "integrity_verified": "BOOLEAN",
             "integrity_status": "VARCHAR(30)",
             "acquired_at": "DATETIME",

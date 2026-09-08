@@ -31,6 +31,7 @@ class AcquisitionService:
                 "original_md5": original["md5"],
                 "size_bytes": original["size_bytes"],
                 "acquired_sha256": acquired["sha256"],
+                "acquired_md5": acquired["md5"],
                 "integrity_verified": integrity_verified,
                 "integrity_status": "VERIFIED" if integrity_verified else "INTEGRITY_COMPROMISED",
             }

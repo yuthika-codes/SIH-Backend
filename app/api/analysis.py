@@ -41,6 +41,7 @@ def run_analysis(payload: AnalysisRequest, db: Session = Depends(get_db)) -> dic
         if isinstance(acquisition, dict):
             evidence.acquired_path = acquisition.get("acquired_path")
             evidence.acquired_sha256 = acquisition.get("acquired_sha256")
+            evidence.acquired_md5 = acquisition.get("acquired_md5")
             evidence.integrity_verified = acquisition.get("integrity_verified")
             evidence.integrity_status = str(acquisition.get("integrity_status", "PENDING"))
             if acquisition.get("status") == "completed":
