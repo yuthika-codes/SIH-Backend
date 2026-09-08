@@ -6,6 +6,7 @@ from app.forensic_engine.acquisition import AcquisitionService
 from app.forensic_engine.device_identifier import DeviceIdentifier
 from app.forensic_engine.filesystem import FileSystemAnalyzer
 from app.forensic_engine.metadata import extract_metadata
+from app.forensic_engine.recovery import RecoveryEngine
 from app.forensic_engine.parsers.base import EvidenceParser
 from app.forensic_engine.parsers.cp_plus import CpPlusParser
 from app.forensic_engine.parsers.dahua import DahuaParser
@@ -56,6 +57,7 @@ class ForensicEngine:
                 "processing_path": None,
                 "device": {},
                 "filesystem": {},
+                "recovery": {"status": "not_run", "artifacts": []},
                 "acquisition": acquisition,
                 "videos": [],
                 "metadata": [],
@@ -70,6 +72,13 @@ class ForensicEngine:
         processing_path = Path(str(acquisition["acquired_path"]))
         device = self.device_identifier.identify(processing_path)
         filesystem = self.filesystem.analyze(processing_path)
+        try:
+            recovery = RecoveryEngine(
+                self.storage_root / "forensic_images",
+                self.storage_root / "recovered",
+            ).recover(processing_path)
+        except (OSError, PermissionError) as exc:
+            recovery = {"status": "error", "artifacts": [], "error": str(exc)}
         parser = self._select_parser(processing_path)
         parser_result = parser.parse(processing_path)
         candidate_videos = [str(item) for item in filesystem.get("candidate_video_files", [])]
@@ -108,6 +117,7 @@ class ForensicEngine:
             "processing_path": str(processing_path),
             "device": device,
             "filesystem": filesystem,
+            "recovery": recovery,
             "parser": parser_result,
             "acquisition": acquisition,
             "videos": extraction,
@@ -136,6 +146,7 @@ class ForensicEngine:
             "error": message,
             "device": {},
             "filesystem": {"status": "error", "error": message},
+            "recovery": {"status": "not_run", "artifacts": []},
             "videos": [],
             "metadata": [],
             "timeline": [],
