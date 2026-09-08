@@ -36,9 +36,16 @@ class ForensicEngine:
             return self._error_result(path, "Evidence path does not exist")
 
         acquisition = self.acquisition.acquire(path, self.storage_root / "forensic_images")
-        if acquisition.get("status") != "completed" or acquisition.get("integrity_verified") is not True:
+        original_sha256 = acquisition.get("original_sha256")
+        acquired_sha256 = acquisition.get("acquired_sha256")
+        hashes_match = (
+            isinstance(original_sha256, str)
+            and isinstance(acquired_sha256, str)
+            and original_sha256.lower() == acquired_sha256.lower()
+        )
+        if acquisition.get("status") != "completed" or acquisition.get("integrity_verified") is not True or not hashes_match:
             integrity_status = acquisition.get("integrity_status")
-            if acquisition.get("status") == "INTEGRITY_COMPROMISED" or acquisition.get("integrity_verified") is False:
+            if acquisition.get("status") == "INTEGRITY_COMPROMISED" or acquisition.get("integrity_verified") is False or not hashes_match:
                 integrity_status = "INTEGRITY_COMPROMISED"
             return {
                 "status": "error",

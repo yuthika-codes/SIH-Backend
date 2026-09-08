@@ -194,6 +194,24 @@ def test_false_integrity_flag_stops_even_with_completed_status(tmp_path: Path, m
     assert result["integrity"]["status"] == "INTEGRITY_COMPROMISED"
 
 
+def test_hash_mismatch_stops_even_when_acquisition_claims_verified(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "evidence.bin"
+    evidence.write_bytes(b"evidence")
+    engine = ForensicEngine(storage_root=tmp_path / "storage")
+    monkeypatch.setattr(engine.acquisition, "acquire", lambda source, destination: {
+        "status": "completed",
+        "original_sha256": "a" * 64,
+        "acquired_sha256": "b" * 64,
+        "integrity_verified": True,
+        "integrity_status": "VERIFIED",
+    })
+    monkeypatch.setattr(engine.device_identifier, "identify", lambda path: (_ for _ in ()).throw(AssertionError("processing must stop")))
+    result = engine.analyze(evidence)
+    assert result["status"] == "error"
+    assert result["integrity"]["verified"] is False
+    assert result["integrity"]["status"] == "INTEGRITY_COMPROMISED"
+
+
 def test_analysis_success_records_started_and_completed_events() -> None:
     with TestClient(app) as client:
         case = client.post("/cases", json={"title": "Custody analysis success"})
