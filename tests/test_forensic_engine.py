@@ -103,27 +103,45 @@ def test_original_evidence_is_unchanged_and_processing_uses_acquired_copy(tmp_pa
     evidence.write_bytes(original_bytes)
     engine = ForensicEngine(storage_root=tmp_path / "storage")
     observed: dict[str, object] = {}
+    calls: list[str] = []
+
+    original_acquire = engine.acquisition.acquire
+
+    def acquire(source: Path, destination: Path) -> dict[str, object]:
+        calls.append("acquisition")
+        return original_acquire(source, destination)
 
     def identify(path: Path) -> dict[str, object]:
+        calls.append("device")
         observed["device"] = Path(path)
         return {"vendor": "Unknown", "confidence": 0.0}
 
     def filesystem(path: Path) -> dict[str, object]:
+        calls.append("filesystem")
         observed["filesystem"] = Path(path)
-        return {"status": "supported", "candidate_video_files": [], "candidate_metadata_files": []}
+        return {"status": "supported", "candidate_video_files": [str(path)], "candidate_metadata_files": []}
 
     class SpyParser(EvidenceParser):
         def can_handle(self, evidence_path: str | Path) -> bool:
+            calls.append("parser.can_handle")
+            observed["parser.can_handle"] = Path(evidence_path)
             return True
 
         def parse(self, evidence_path: str | Path) -> dict[str, object]:
+            calls.append("parser.parse")
             observed["parser"] = Path(evidence_path)
             return {"status": "supported"}
 
+    def extract(paths: list[str], output: Path) -> list[dict[str, object]]:
+        calls.append("video.extract")
+        observed["video"] = [Path(path) for path in paths]
+        return []
+
+    monkeypatch.setattr(engine.acquisition, "acquire", acquire)
     monkeypatch.setattr(engine.device_identifier, "identify", identify)
     monkeypatch.setattr(engine.filesystem, "analyze", filesystem)
-    monkeypatch.setattr(engine, "_select_parser", lambda path: SpyParser())
-    monkeypatch.setattr(engine.video_extractor, "extract", lambda paths, output: [])
+    engine.parsers = [SpyParser(), SpyParser()]
+    monkeypatch.setattr(engine.video_extractor, "extract", extract)
 
     result = engine.analyze(evidence)
     acquired = Path(result["processing_path"])
@@ -131,7 +149,12 @@ def test_original_evidence_is_unchanged_and_processing_uses_acquired_copy(tmp_pa
     assert acquired != evidence
     assert acquired.parent.name == "forensic_images"
     assert evidence.read_bytes() == original_bytes
-    assert all(path == acquired for path in observed.values())
+    assert observed["device"] == acquired
+    assert observed["filesystem"] == acquired
+    assert observed["parser.can_handle"] == acquired
+    assert observed["parser"] == acquired
+    assert observed["video"] == [acquired]
+    assert calls == ["acquisition", "device", "filesystem", "parser.can_handle", "parser.parse", "video.extract"]
 
 
 def test_integrity_mismatch_stops_before_forensic_processing(tmp_path: Path, monkeypatch) -> None:
@@ -153,6 +176,22 @@ def test_integrity_mismatch_stops_before_forensic_processing(tmp_path: Path, mon
     assert result["integrity"]["status"] == "INTEGRITY_COMPROMISED"
     assert result["videos"] == []
     assert result["metadata"] == []
+
+
+def test_false_integrity_flag_stops_even_with_completed_status(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "evidence.bin"
+    evidence.write_bytes(b"evidence")
+    engine = ForensicEngine(storage_root=tmp_path / "storage")
+    monkeypatch.setattr(engine.acquisition, "acquire", lambda source, destination: {
+        "status": "completed",
+        "original_sha256": "a" * 64,
+        "acquired_sha256": "b" * 64,
+        "integrity_verified": False,
+    })
+    monkeypatch.setattr(engine.device_identifier, "identify", lambda path: (_ for _ in ()).throw(AssertionError("processing must stop")))
+    result = engine.analyze(evidence)
+    assert result["status"] == "error"
+    assert result["integrity"]["status"] == "INTEGRITY_COMPROMISED"
 
 
 def test_analysis_success_records_started_and_completed_events() -> None:
