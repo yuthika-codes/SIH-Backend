@@ -35,15 +35,17 @@ class ForensicEngine:
         if not path.exists():
             return self._error_result(path, "Evidence path does not exist")
 
-        device = self.device_identifier.identify(path)
-        filesystem = self.filesystem.analyze(path)
         acquisition = self.acquisition.acquire(path, self.storage_root / "forensic_images")
-        if acquisition.get("status") == "INTEGRITY_COMPROMISED":
+        if acquisition.get("status") != "completed":
+            integrity_status = acquisition.get("integrity_status")
+            if acquisition.get("status") == "INTEGRITY_COMPROMISED":
+                integrity_status = "INTEGRITY_COMPROMISED"
             return {
-                "status": "INTEGRITY_COMPROMISED",
+                "status": "error",
                 "evidence": {"path": str(path), "exists": True},
-                "device": device,
-                "filesystem": filesystem,
+                "processing_path": None,
+                "device": {},
+                "filesystem": {},
                 "acquisition": acquisition,
                 "videos": [],
                 "metadata": [],
@@ -52,11 +54,14 @@ class ForensicEngine:
                     "sha256": acquisition.get("original_sha256"),
                     "md5": acquisition.get("original_md5"),
                     "verified": False,
+                    "status": integrity_status or "ACQUISITION_FAILED",
                 },
             }
-        processing_path = Path(str(acquisition.get("acquired_path", path))) if acquisition.get("status") == "completed" else path
-        parser = self._select_parser(path)
-        parser_result = parser.parse(path)
+        processing_path = Path(str(acquisition["acquired_path"]))
+        device = self.device_identifier.identify(processing_path)
+        filesystem = self.filesystem.analyze(processing_path)
+        parser = self._select_parser(processing_path)
+        parser_result = parser.parse(processing_path)
         candidate_videos = [str(item) for item in filesystem.get("candidate_video_files", [])]
         extraction = self.video_extractor.extract(candidate_videos, self.storage_root / "extracted")
         metadata = [extract_metadata(str(item["output_path"])) for item in extraction if item.get("status") == "completed" and item.get("output_path")]
@@ -77,6 +82,7 @@ class ForensicEngine:
         return {
             "status": "error" if has_fatal_error else "completed",
             "evidence": {"path": str(path), "exists": True},
+            "processing_path": str(processing_path),
             "device": device,
             "filesystem": filesystem,
             "parser": parser_result,
@@ -88,6 +94,7 @@ class ForensicEngine:
                 "sha256": acquisition.get("original_sha256"),
                 "md5": acquisition.get("original_md5"),
                 "verified": acquisition.get("integrity_verified", False),
+                "status": acquisition.get("integrity_status", "UNKNOWN"),
             },
         }
 

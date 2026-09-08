@@ -6,6 +6,7 @@ from app.forensic_engine.device_identifier import DeviceIdentifier
 from app.forensic_engine.engine import ForensicEngine
 from app.forensic_engine.hashing import calculate_file_hashes, calculate_md5, calculate_sha256, verify_sha256
 from app.forensic_engine.metadata import extract_metadata
+from app.forensic_engine.parsers.base import EvidenceParser
 from app.forensic_engine.parsers.dahua import DahuaParser
 from app.main import app
 
@@ -94,3 +95,100 @@ def test_missing_evidence_verification_returns_error() -> None:
     with TestClient(app) as client:
         response = client.get("/verification/does-not-exist")
     assert response.status_code == 404
+
+
+def test_original_evidence_is_unchanged_and_processing_uses_acquired_copy(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "camera.bin"
+    original_bytes = b"read-only original evidence"
+    evidence.write_bytes(original_bytes)
+    engine = ForensicEngine(storage_root=tmp_path / "storage")
+    observed: dict[str, object] = {}
+
+    def identify(path: Path) -> dict[str, object]:
+        observed["device"] = Path(path)
+        return {"vendor": "Unknown", "confidence": 0.0}
+
+    def filesystem(path: Path) -> dict[str, object]:
+        observed["filesystem"] = Path(path)
+        return {"status": "supported", "candidate_video_files": [], "candidate_metadata_files": []}
+
+    class SpyParser(EvidenceParser):
+        def can_handle(self, evidence_path: str | Path) -> bool:
+            return True
+
+        def parse(self, evidence_path: str | Path) -> dict[str, object]:
+            observed["parser"] = Path(evidence_path)
+            return {"status": "supported"}
+
+    monkeypatch.setattr(engine.device_identifier, "identify", identify)
+    monkeypatch.setattr(engine.filesystem, "analyze", filesystem)
+    monkeypatch.setattr(engine, "_select_parser", lambda path: SpyParser())
+    monkeypatch.setattr(engine.video_extractor, "extract", lambda paths, output: [])
+
+    result = engine.analyze(evidence)
+    acquired = Path(result["processing_path"])
+    assert result["status"] == "completed"
+    assert acquired != evidence
+    assert acquired.parent.name == "forensic_images"
+    assert evidence.read_bytes() == original_bytes
+    assert all(path == acquired for path in observed.values())
+
+
+def test_integrity_mismatch_stops_before_forensic_processing(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "evidence.bin"
+    evidence.write_bytes(b"evidence")
+    engine = ForensicEngine(storage_root=tmp_path / "storage")
+    monkeypatch.setattr(engine.acquisition, "acquire", lambda source, destination: {
+        "status": "INTEGRITY_COMPROMISED",
+        "original_sha256": "a" * 64,
+        "acquired_sha256": "b" * 64,
+        "original_md5": "c" * 32,
+        "integrity_verified": False,
+        "integrity_status": "INTEGRITY_COMPROMISED",
+    })
+    monkeypatch.setattr(engine.device_identifier, "identify", lambda path: (_ for _ in ()).throw(AssertionError("device identification must not run")))
+    result = engine.analyze(evidence)
+    assert result["status"] == "error"
+    assert result["integrity"]["verified"] is False
+    assert result["integrity"]["status"] == "INTEGRITY_COMPROMISED"
+    assert result["videos"] == []
+    assert result["metadata"] == []
+
+
+def test_analysis_success_records_started_and_completed_events() -> None:
+    with TestClient(app) as client:
+        case = client.post("/cases", json={"title": "Custody analysis success"})
+        evidence_response = client.post("/evidence/upload/" + case.json()["id"], files={"file": ("success.bin", b"success evidence", "application/octet-stream")})
+        evidence_id = evidence_response.json()["id"]
+        response = client.post("/analysis/run", json={"evidence_id": evidence_id})
+        assert response.status_code == 200
+        actions = {event["action"] for event in client.get("/custody/" + evidence_id).json()}
+        assert {"ANALYSIS_STARTED", "ACQUISITION_STARTED", "ACQUISITION_COMPLETED", "INTEGRITY_VERIFIED", "ANALYSIS_COMPLETED"} <= actions
+
+
+def test_analysis_mismatch_records_compromised_event(monkeypatch) -> None:
+    from app.api import analysis as analysis_api
+
+    def compromised(self, path):
+        return {
+            "status": "error",
+            "acquisition": {
+                "status": "INTEGRITY_COMPROMISED",
+                "original_sha256": "a" * 64,
+                "acquired_sha256": "b" * 64,
+                "integrity_verified": False,
+                "integrity_status": "INTEGRITY_COMPROMISED",
+            },
+            "integrity": {"verified": False, "status": "INTEGRITY_COMPROMISED"},
+        }
+
+    monkeypatch.setattr(analysis_api.ForensicEngine, "analyze", compromised)
+    with TestClient(app) as client:
+        case = client.post("/cases", json={"title": "Custody mismatch"})
+        evidence_response = client.post("/evidence/upload/" + case.json()["id"], files={"file": ("mismatch.bin", b"mismatch evidence", "application/octet-stream")})
+        evidence_id = evidence_response.json()["id"]
+        response = client.post("/analysis/run", json={"evidence_id": evidence_id})
+        assert response.status_code == 200
+        actions = {event["action"] for event in client.get("/custody/" + evidence_id).json()}
+        assert "INTEGRITY_COMPROMISED" in actions
+        assert "ANALYSIS_COMPLETED" not in actions

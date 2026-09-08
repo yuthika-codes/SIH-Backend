@@ -32,8 +32,8 @@ def run_analysis(payload: AnalysisRequest, db: Session = Depends(get_db)) -> dic
     if not path:
         raise HTTPException(status_code=400, detail="Provide evidence_id or evidence_path")
     if evidence_id:
-        record_custody_event(db, evidence_id, "ACQUISITION_STARTED", description="Forensic acquisition started.", sha256=evidence.sha256 if evidence else None)
         record_custody_event(db, evidence_id, "ANALYSIS_STARTED", description="Forensic analysis started.", sha256=evidence.sha256 if evidence else None, metadata={"analysis_type": payload.analysis_type})
+        record_custody_event(db, evidence_id, "ACQUISITION_STARTED", description="Forensic acquisition started.", sha256=evidence.sha256 if evidence else None)
         db.commit()
     result = ForensicEngine().analyze(path)
     if evidence_id:
@@ -51,6 +51,8 @@ def run_analysis(payload: AnalysisRequest, db: Session = Depends(get_db)) -> dic
             elif acquisition.get("status") == "INTEGRITY_COMPROMISED":
                 evidence.status = "integrity_compromised"
                 record_custody_event(db, evidence_id, "INTEGRITY_COMPROMISED", description="Acquired copy SHA-256 differs from the original evidence SHA-256.", sha256=evidence.acquired_sha256, metadata={"original_sha256": evidence.sha256})
+            elif acquisition.get("status") != "completed":
+                record_custody_event(db, evidence_id, "ACQUISITION_FAILED", description="Forensic acquisition did not complete.", sha256=evidence.sha256, metadata={"error": acquisition.get("error")})
         if result.get("status") == "completed":
             record_custody_event(db, evidence_id, "ANALYSIS_COMPLETED", description="Forensic analysis completed.", sha256=evidence.acquired_sha256, metadata={"analysis_type": payload.analysis_type})
         record = AnalysisResult(id=str(uuid4()), evidence_id=evidence_id, analysis_type=payload.analysis_type, result=serialize_result(result))

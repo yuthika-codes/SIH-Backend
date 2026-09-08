@@ -4,9 +4,9 @@ FastAPI backend for vendor-agnostic DVR/NVR forensic evidence analysis.
 
 ## Forensic pipeline
 
-`Evidence -> SHA-256/MD5 hashing -> device identification -> filesystem analysis -> video extraction -> metadata extraction -> timeline -> analysis result`
+`Original Evidence -> original MD5/SHA-256 hash -> forensic acquisition -> acquired SHA-256 verification -> Verified Forensic Copy -> device identification -> filesystem analysis -> vendor parser -> video discovery/extraction -> metadata -> timeline -> analysis result`
 
-The pipeline never writes to the original evidence. File acquisitions are copied into `storage/forensic_images/`, and validated extracted media is written to `storage/extracted/`. SHA-256 is the primary integrity hash; MD5 is retained for compatibility and reporting.
+The pipeline never writes to the original evidence. File acquisitions are copied into `storage/forensic_images/`, and all processing after acquisition uses only the verified acquired copy. Validated extracted media is written to `storage/extracted/`. SHA-256 is the primary integrity hash; MD5 is retained for compatibility and reporting.
 
 ## Architecture
 
