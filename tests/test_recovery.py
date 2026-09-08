@@ -123,3 +123,34 @@ def test_recovery_engine_only_reads_acquired_copy(tmp_path: Path, monkeypatch) -
     result = RecoveryEngine(acquired, recovered).recover(source)
     assert Path(result["artifacts"][0]["source_path"]) == source
     assert not (tmp_path / "original.mp4").exists()
+
+
+def test_embedded_mp4_is_carved_with_offset_and_provenance(tmp_path: Path, monkeypatch) -> None:
+    acquired = tmp_path / "forensic_images"
+    recovered = tmp_path / "recovered"
+    acquired.mkdir()
+    raw = acquired / "disk.img"
+    prefix = b"header" * 20
+    payload = (24).to_bytes(4, "big") + b"ftypisom" + b"payload-data"
+    raw.write_bytes(prefix + payload + b"trailer")
+    monkeypatch.setattr(recovery_module, "extract_metadata", _mock_valid_probe)
+    artifacts = RecoveryEngine(acquired, recovered).recover(raw)["artifacts"]
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact["source_offset"] == len(prefix)
+    assert artifact["method"] == "signature_scan"
+    assert artifact["source_path"] == str(raw)
+    assert artifact["sha256"] == calculate_sha256(artifact["output_path"])
+    assert Path(artifact["output_path"]).parent == recovered
+    assert raw.read_bytes() == prefix + payload + b"trailer"
+
+
+def test_multiple_embedded_candidates_are_reported(tmp_path: Path, monkeypatch) -> None:
+    acquired = tmp_path / "forensic_images"
+    acquired.mkdir()
+    raw = acquired / "raw.bin"
+    raw.write_bytes(b"x" * 10 + (24).to_bytes(4, "big") + b"ftypisom" + b"a" * 12 + b"y" * 10 + (24).to_bytes(4, "big") + b"ftypisom" + b"b" * 12)
+    monkeypatch.setattr(recovery_module, "extract_metadata", _mock_valid_probe)
+    artifacts = RecoveryEngine(acquired, tmp_path / "recovered").recover(raw)["artifacts"]
+    assert len(artifacts) == 2
+    assert {artifact["source_offset"] for artifact in artifacts} == {10, 44}
