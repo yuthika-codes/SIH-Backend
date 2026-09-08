@@ -212,6 +212,23 @@ def test_hash_mismatch_stops_even_when_acquisition_claims_verified(tmp_path: Pat
     assert result["integrity"]["status"] == "INTEGRITY_COMPROMISED"
 
 
+def test_acquisition_failure_stops_before_forensic_processing(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "evidence.bin"
+    evidence.write_bytes(b"evidence")
+    engine = ForensicEngine(storage_root=tmp_path / "storage")
+    monkeypatch.setattr(engine.acquisition, "acquire", lambda source, destination: {
+        "status": "error",
+        "error": "copy failed",
+    })
+    monkeypatch.setattr(engine.device_identifier, "identify", lambda path: (_ for _ in ()).throw(AssertionError("processing must stop")))
+    monkeypatch.setattr(engine.filesystem, "analyze", lambda path: (_ for _ in ()).throw(AssertionError("processing must stop")))
+    result = engine.analyze(evidence)
+    assert result["status"] == "error"
+    assert result["processing_path"] is None
+    assert result["videos"] == []
+    assert result["integrity"]["status"] == "ACQUISITION_FAILED"
+
+
 def test_analysis_success_records_started_and_completed_events() -> None:
     with TestClient(app) as client:
         case = client.post("/cases", json={"title": "Custody analysis success"})
