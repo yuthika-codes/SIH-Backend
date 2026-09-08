@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.forensic_engine.acquisition import AcquisitionService
@@ -14,6 +15,8 @@ from app.forensic_engine.parsers.honeywell import HoneywellParser
 from app.forensic_engine.parsers.matrix import MatrixParser
 from app.forensic_engine.parsers.uniview import UniviewParser
 from app.forensic_engine.timeline import TimelineAnalyzer
+from app.forensic_engine.timestamp import extract_camera_id, extract_timestamp
+from app.forensic_engine.correlation import correlate_events
 from app.forensic_engine.video_extractor import VideoExtractor
 from app.services.storage import ROOT
 
@@ -71,20 +74,33 @@ class ForensicEngine:
         parser_result = parser.parse(processing_path)
         candidate_videos = [str(item) for item in filesystem.get("candidate_video_files", [])]
         extraction = self.video_extractor.extract(candidate_videos, self.storage_root / "extracted")
-        metadata = [extract_metadata(str(item["output_path"])) for item in extraction if item.get("status") == "completed" and item.get("output_path")]
-        events = [
-            {
-                "timestamp": item.get("modification_time"),
-                "source": item.get("filename", str(processing_path)),
-                "camera_id": None,
-                "event_type": "filesystem_metadata",
-                "description": "File modification timestamp from the evidence filesystem",
-                "timezone": item.get("timezone", "unknown"),
-            }
-            for item in metadata
-            if item.get("modification_time")
-        ]
-        timeline = self.timeline.build(events)
+        metadata = []
+        events = []
+        for item in extraction:
+            output_path = item.get("output_path")
+            if item.get("status") != "completed" or not output_path:
+                continue
+            item_metadata = extract_metadata(str(output_path))
+            try:
+                filesystem_mtime = datetime.fromtimestamp(Path(output_path).stat().st_mtime, timezone.utc)
+            except (OSError, PermissionError):
+                filesystem_mtime = None
+            timestamp = extract_timestamp(item_metadata, output_path, filesystem_mtime)
+            item_metadata["timestamp"] = timestamp
+            item_metadata["camera_id"] = extract_camera_id(output_path, item_metadata.get("container_metadata"))
+            metadata.append(item_metadata)
+            events.append({
+                "timestamp": timestamp.get("timestamp"),
+                "timestamp_source": timestamp.get("source"),
+                "timestamp_confidence": timestamp.get("confidence"),
+                "camera_id": item_metadata["camera_id"],
+                "event_type": "video_recording",
+                "evidence_path": str(output_path),
+                "description": "CCTV recording event; filesystem fallback is not recording time",
+                "timezone": timestamp.get("timezone", "unknown"),
+            })
+        timeline = self.timeline.build_result(events)
+        correlations = correlate_events(timeline["events"])
         has_fatal_error = acquisition.get("status") == "error" or filesystem.get("status") == "error"
         return {
             "status": "error" if has_fatal_error else "completed",
@@ -97,6 +113,7 @@ class ForensicEngine:
             "videos": extraction,
             "metadata": metadata,
             "timeline": timeline,
+            "correlations": correlations,
             "integrity": {
                 "sha256": acquisition.get("original_sha256"),
                 "md5": acquisition.get("original_md5"),
@@ -122,6 +139,7 @@ class ForensicEngine:
             "videos": [],
             "metadata": [],
             "timeline": [],
+            "correlations": [],
             "integrity": {"sha256": None, "md5": None, "verified": False},
         }
 
