@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.forensic_engine.acquisition import AcquisitionService
+from app.forensic_engine.ai_analysis import AIAnalysisEngine
 from app.forensic_engine.device_identifier import DeviceIdentifier
 from app.forensic_engine.filesystem import FileSystemAnalyzer
 from app.forensic_engine.metadata import extract_metadata
@@ -29,6 +30,7 @@ class ForensicEngine:
         self.device_identifier = DeviceIdentifier()
         self.filesystem = FileSystemAnalyzer()
         self.video_extractor = VideoExtractor()
+        self.ai_analysis = AIAnalysisEngine()
         self.timeline = TimelineAnalyzer()
         self.parsers: list[EvidenceParser] = [
             DahuaParser(), HikvisionParser(), CpPlusParser(), UniviewParser(), HoneywellParser(), MatrixParser(), GenericParser()
@@ -62,6 +64,7 @@ class ForensicEngine:
                 "videos": [],
                 "metadata": [],
                 "timeline": [],
+                "ai_analysis": {"status": "not_run", "events": [], "summary": {"detection_counts": {}}},
                 "integrity": {
                     "sha256": acquisition.get("original_sha256"),
                     "md5": acquisition.get("original_md5"),
@@ -110,6 +113,9 @@ class ForensicEngine:
             })
         timeline = self.timeline.build_result(events)
         correlations = correlate_events(timeline["events"])
+        ai_paths = [str(item["output_path"]) for item in extraction if item.get("status") == "completed" and item.get("output_path")]
+        ai_paths.extend(str(item["output_path"]) for item in recovery.get("artifacts", []) if item.get("output_path") and item.get("classification") in {"VALID", "PARTIALLY_RECOVERABLE"})
+        ai_analysis = self.ai_analysis.analyze_videos(list(dict.fromkeys(ai_paths)))
         has_fatal_error = acquisition.get("status") == "error" or filesystem.get("status") == "error"
         return {
             "status": "error" if has_fatal_error else "completed",
@@ -124,6 +130,7 @@ class ForensicEngine:
             "metadata": metadata,
             "timeline": timeline,
             "correlations": correlations,
+            "ai_analysis": ai_analysis,
             "integrity": {
                 "sha256": acquisition.get("original_sha256"),
                 "md5": acquisition.get("original_md5"),
@@ -151,6 +158,7 @@ class ForensicEngine:
             "metadata": [],
             "timeline": [],
             "correlations": [],
+            "ai_analysis": {"status": "not_run", "events": [], "summary": {"detection_counts": {}}},
             "integrity": {"sha256": None, "md5": None, "verified": False},
         }
 

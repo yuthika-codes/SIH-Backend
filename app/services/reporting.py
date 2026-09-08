@@ -35,6 +35,7 @@ def build_report(evidence: Evidence, case: Case | None, analysis: AnalysisResult
     correlations = analysis_result.get("correlations", []) if isinstance(analysis_result.get("correlations"), list) else []
     recovery = analysis_result.get("recovery", {}) if isinstance(analysis_result.get("recovery"), dict) else {}
     artifacts = recovery.get("artifacts", []) if isinstance(recovery.get("artifacts"), list) else []
+    ai_analysis = _normalize_ai_analysis(analysis_result.get("ai_analysis"))
     warnings: list[str] = []
     if not analysis:
         warnings.append("No stored forensic analysis result is available.")
@@ -66,6 +67,7 @@ def build_report(evidence: Evidence, case: Case | None, analysis: AnalysisResult
         "timeline": timeline,
         "multi_camera_correlation": correlations,
         "recovery_findings": artifacts,
+        "ai_analysis": ai_analysis,
         "chain_of_custody": [_custody_dict(event) for event in sorted(custody, key=lambda item: item.created_at)],
         "warnings_limitations": sorted(set(warnings)),
     }
@@ -87,7 +89,44 @@ def _summary(report: dict[str, object]) -> dict[str, object]:
     metadata = report["video_analysis"]
     artifacts = report["recovery_findings"]
     correlations = report["multi_camera_correlation"]
-    return {"evidence": evidence["filename"], "integrity_status": integrity["status"], "integrity_verified": integrity["verified"], "device_status": report["device_information"].get("vendor", "Not available"), "video_file_count": len(metadata), "event_count": len(report["timeline"].get("events", [])) if isinstance(report["timeline"], dict) else 0, "recovered_artifact_count": len(artifacts), "corrupted_or_unknown_artifact_count": sum(1 for item in artifacts if item.get("classification") in {"CORRUPTED", "UNKNOWN"}), "correlated_event_count": len(correlations), "limitations": report["warnings_limitations"]}
+    ai = report["ai_analysis"]
+    return {"evidence": evidence["filename"], "integrity_status": integrity["status"], "integrity_verified": integrity["verified"], "device_status": report["device_information"].get("vendor", "Not available"), "video_file_count": len(metadata), "event_count": len(report["timeline"].get("events", [])) if isinstance(report["timeline"], dict) else 0, "recovered_artifact_count": len(artifacts), "corrupted_or_unknown_artifact_count": sum(1 for item in artifacts if item.get("classification") in {"CORRUPTED", "UNKNOWN"}), "correlated_event_count": len(correlations), "ai_analysis_status": ai["status"], "ai_event_count": ai["summary"]["total_events"], "persons_detected": ai["summary"]["person_detections"], "objects_detected": ai["summary"]["object_detections"], "limitations": report["warnings_limitations"]}
+
+
+def _normalize_ai_analysis(raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        return {"status": "not_run", "model": "Unknown", "events": [], "summary": _ai_summary([])}
+    events = raw.get("events") if isinstance(raw.get("events"), list) else []
+    videos = raw.get("videos") if isinstance(raw.get("videos"), list) else []
+    model = raw.get("model") if raw.get("model") else "Unknown"
+    if model == "Unknown":
+        for video in videos:
+            components = video.get("components") if isinstance(video, dict) else None
+            if isinstance(components, dict) and components.get("yolo") == "available":
+                model = "YOLO"
+                break
+    return {"status": raw.get("status") or "not_run", "model": model, "events": events, "summary": _ai_summary(events)}
+
+
+def _ai_summary(events: list[object]) -> dict[str, object]:
+    person = face = motion = objects = 0
+    labels: set[str] = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("event_type")
+        label = event.get("label")
+        if event_type == "person":
+            person += 1
+        elif event_type == "face":
+            face += 1
+        elif event_type == "motion":
+            motion += 1
+        elif event_type == "object":
+            objects += 1
+            if isinstance(label, str) and label:
+                labels.add(label)
+    return {"total_events": len(events), "person_detections": person, "object_detections": objects, "face_detections": face, "motion_events": motion, "unique_object_labels": sorted(labels)}
 
 
 def render_pdf(report: dict[str, object]) -> bytes:
@@ -98,10 +137,11 @@ def render_pdf(report: dict[str, object]) -> bytes:
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     stream = BytesIO()
-    document = SimpleDocTemplate(stream, pagesize=letter, rightMargin=0.5 * inch, leftMargin=0.5 * inch, topMargin=0.5 * inch, bottomMargin=0.5 * inch)
+    document = SimpleDocTemplate(stream, pagesize=letter, rightMargin=0.5 * inch, leftMargin=0.5 * inch, topMargin=0.5 * inch, bottomMargin=0.5 * inch, pageCompression=0)
     styles = getSampleStyleSheet()
     story = [Paragraph("SIH Forensic Evidence Report", styles["Title"]), Paragraph(f"Report ID: {report['report_header']['report_id']}", styles["Normal"]), Spacer(1, 12)]
-    for title, section in (("Executive Summary", report["executive_summary"]), ("Case Information", report["case_information"]), ("Evidence Information", report["evidence_information"]), ("Integrity Information", report["integrity_information"]), ("Device Information", report["device_information"]), ("Filesystem Analysis", report["filesystem_analysis"]), ("Video Analysis", {"streams": report["video_analysis"]}), ("Timeline", report["timeline"]), ("Correlations", {"correlations": report["multi_camera_correlation"]}), ("Recovery Findings", {"artifacts": report["recovery_findings"]}), ("Chain of Custody", {"events": report["chain_of_custody"]}), ("Warnings / Limitations", {"warnings": report["warnings_limitations"]})):
+    ai_section = {"status": report["ai_analysis"]["status"], "model": report["ai_analysis"]["model"], **report["ai_analysis"]["summary"], "events": report["ai_analysis"]["events"][:100], "event_list_note": "Only the first 100 events are displayed; the full AI results remain in the JSON report." if len(report["ai_analysis"]["events"]) > 100 else ""}
+    for title, section in (("Executive Summary", report["executive_summary"]), ("Case Information", report["case_information"]), ("Evidence Information", report["evidence_information"]), ("Integrity Information", report["integrity_information"]), ("Device Information", report["device_information"]), ("Filesystem Analysis", report["filesystem_analysis"]), ("Video Analysis", {"streams": report["video_analysis"]}), ("AI Analysis", ai_section), ("Timeline", report["timeline"]), ("Correlations", {"correlations": report["multi_camera_correlation"]}), ("Recovery Findings", {"artifacts": report["recovery_findings"]}), ("Chain of Custody", {"events": report["chain_of_custody"]}), ("Warnings / Limitations", {"warnings": report["warnings_limitations"]})):
         story.append(Paragraph(title, styles["Heading2"]))
         rows = [[str(key), json.dumps(value, default=str) if isinstance(value, (dict, list)) else str(value)] for key, value in section.items()]
         table = Table(rows, colWidths=[1.8 * inch, 5.2 * inch])
