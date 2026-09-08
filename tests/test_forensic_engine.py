@@ -6,6 +6,9 @@ from app.forensic_engine.device_identifier import DeviceIdentifier
 from app.forensic_engine.engine import ForensicEngine
 from app.forensic_engine.hashing import calculate_file_hashes, calculate_md5, calculate_sha256, verify_sha256
 from app.forensic_engine.metadata import extract_metadata
+from app.forensic_engine import metadata as metadata_module
+from app.forensic_engine.filesystem import FileSystemAnalyzer
+from app.forensic_engine.video_extractor import VideoExtractor
 from app.forensic_engine.parsers.base import EvidenceParser
 from app.forensic_engine.parsers.dahua import DahuaParser
 from app.main import app
@@ -36,14 +39,107 @@ def test_vendor_parser_does_not_fake_proprietary_support(tmp_path: Path) -> None
     assert result["status"] == "unsupported"
 
 
-def test_metadata_uses_real_file_values(tmp_path: Path) -> None:
+def test_metadata_uses_real_file_values(tmp_path: Path, monkeypatch) -> None:
     evidence = tmp_path / "sample.bin"
     evidence.write_bytes(b"metadata")
+    command_paths: list[str] = []
+    monkeypatch.setattr(metadata_module.shutil, "which", lambda executable: executable)
+
+    def probe(*args, **kwargs):
+        command_paths.append(args[0][-1])
+        return type("Completed", (), {
+            "returncode": 0,
+            "stdout": '{"format":{"format_name":"matroska,webm","format_long_name":"Matroska / WebM","duration":"2.5","bit_rate":"8000","start_time":"0.0","tags":{"encoder":"test"}},"streams":[{"codec_type":"video","codec_name":"h264","codec_long_name":"H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10","profile":"High","width":1920,"height":1080,"pix_fmt":"yuv420p","r_frame_rate":"25/1","avg_frame_rate":"25/1","nb_frames":"63","start_time":"0.0","duration":"2.5"},{"codec_type":"audio","codec_name":"aac","codec_long_name":"AAC","sample_rate":"48000","channels":2,"start_time":"0.0","duration":"2.5"}]}',
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr(metadata_module.subprocess, "run", probe)
     result = extract_metadata(str(evidence))
-    assert result["status"] == "completed"
+    assert result["probe_status"] == "success"
     assert result["filename"] == "sample.bin"
-    assert result["file_size"] == 8
-    assert result["duration"] is None
+    assert result["file_size_bytes"] == 8
+    assert result["format_name"] == "matroska,webm"
+    assert result["duration_seconds"] == 2.5
+    assert result["video_streams"][0]["width"] == 1920
+    assert result["video_streams"][0]["height"] == 1080
+    assert result["video_streams"][0]["codec_name"] == "h264"
+    assert result["audio_streams"][0]["sample_rate"] == 48000
+    assert command_paths == [str(evidence)]
+
+
+def test_metadata_missing_file_returns_error(tmp_path: Path) -> None:
+    result = extract_metadata(tmp_path / "missing.mp4")
+    assert result["probe_status"] == "error"
+    assert result["error"] == "File does not exist"
+
+
+def test_metadata_reports_corrupt_video(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "corrupt.mp4"
+    evidence.write_bytes(b"not a video")
+    monkeypatch.setattr(metadata_module.shutil, "which", lambda executable: executable)
+    monkeypatch.setattr(metadata_module.subprocess, "run", lambda *args, **kwargs: type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "Invalid data found"})())
+    result = extract_metadata(evidence)
+    assert result["probe_status"] == "error"
+    assert "Invalid data" in result["error"]
+
+
+def test_metadata_reports_missing_ffprobe(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "video.mp4"
+    evidence.write_bytes(b"video")
+    monkeypatch.setattr(metadata_module.shutil, "which", lambda executable: None)
+    result = extract_metadata(evidence)
+    assert result["probe_status"] == "error"
+    assert result["error"] == "FFprobe executable not found"
+
+
+def test_metadata_reports_malformed_ffprobe_output(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "video.mp4"
+    evidence.write_bytes(b"video")
+    monkeypatch.setattr(metadata_module.shutil, "which", lambda executable: executable)
+    monkeypatch.setattr(metadata_module.subprocess, "run", lambda *args, **kwargs: type("Completed", (), {"returncode": 0, "stdout": "not-json", "stderr": ""})())
+    result = extract_metadata(evidence)
+    assert result["probe_status"] == "error"
+    assert result["error"] == "Malformed FFprobe JSON output"
+
+
+def test_proprietary_dav_is_unsupported(tmp_path: Path) -> None:
+    evidence = tmp_path / "camera.dav"
+    evidence.write_bytes(b"proprietary")
+    result = FileSystemAnalyzer().analyze(evidence)
+    assert result["status"] == "unsupported"
+    assert result["candidate_video_files"] == []
+    extraction = VideoExtractor().extract([evidence], tmp_path / "extracted")
+    assert extraction[0]["status"] == "unsupported"
+
+
+def test_engine_metadata_and_extraction_use_acquired_copy(tmp_path: Path, monkeypatch) -> None:
+    evidence = tmp_path / "original.mp4"
+    evidence.write_bytes(b"original")
+    engine = ForensicEngine(storage_root=tmp_path / "storage")
+    observed: dict[str, object] = {}
+
+    def filesystem(path: Path) -> dict[str, object]:
+        acquired_video = Path(path).with_name("acquired-video.mp4")
+        acquired_video.write_bytes(b"acquired video")
+        return {"status": "supported", "candidate_video_files": [str(acquired_video)], "candidate_metadata_files": []}
+
+    def extract(paths: list[str], output: Path) -> list[dict[str, object]]:
+        observed["extraction"] = [Path(path) for path in paths]
+        return [{"status": "completed", "input_path": paths[0], "output_path": str(output / "extracted.mp4")}]
+
+    def metadata(path: str) -> dict[str, object]:
+        observed["metadata"] = Path(path)
+        return {"probe_status": "success", "filename": Path(path).name}
+
+    monkeypatch.setattr(engine.filesystem, "analyze", filesystem)
+    monkeypatch.setattr(engine.video_extractor, "extract", extract)
+    monkeypatch.setattr("app.forensic_engine.engine.extract_metadata", metadata)
+    result = engine.analyze(evidence)
+    acquired = Path(result["processing_path"])
+    assert acquired != evidence
+    assert observed["extraction"][0].parent == acquired.parent
+    assert observed["metadata"].parent == (tmp_path / "storage" / "extracted")
+    assert evidence.read_bytes() == b"original"
 
 
 def test_engine_missing_evidence(tmp_path: Path) -> None:

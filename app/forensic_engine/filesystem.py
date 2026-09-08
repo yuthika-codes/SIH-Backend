@@ -1,7 +1,7 @@
 from pathlib import Path
 import mimetypes
 
-VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".h264", ".h265", ".ts", ".m2ts", ".dav"}
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".ts", ".m2ts", ".h264", ".h265", ".265", ".hevc"}
 METADATA_EXTENSIONS = {".json", ".xml", ".csv", ".txt", ".log"}
 
 
@@ -13,6 +13,20 @@ class FileSystemAnalyzer:
         try:
             if path.is_file():
                 stat = path.stat()
+                if path.suffix.lower() == ".dav":
+                    return {
+                        "status": "unsupported",
+                        "path": str(path),
+                        "kind": "file",
+                        "size_bytes": stat.st_size,
+                        "extension": ".dav",
+                        "file_type": mimetypes.guess_type(path.name)[0],
+                        "number_of_files": 1,
+                        "candidate_video_files": [],
+                        "candidate_metadata_files": [],
+                        "container_indicators": [],
+                        "reason": "No validated parser available for this proprietary format",
+                    }
                 return {
                     "status": "supported",
                     "path": str(path),
