@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.env
+*.db
+storage/evidence/*
+storage/forensic_images/*
+storage/extracted/*
+storage/recovered/*
+storage/reports/*
