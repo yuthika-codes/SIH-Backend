@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,7 +15,10 @@ router = APIRouter(prefix="/custody", tags=["chain of custody"])
 
 class CustodyCreate(BaseModel):
     action: str
-    actor: str
+    actor: str = "system"
+    description: str | None = None
+    sha256: str | None = None
+    metadata: dict[str, object] | None = None
     notes: str | None = None
 
 
@@ -22,7 +26,9 @@ class CustodyCreate(BaseModel):
 def add_event(evidence_id: str, payload: CustodyCreate, db: Session = Depends(get_db)) -> CustodyEvent:
     if db.get(Evidence, evidence_id) is None:
         raise HTTPException(status_code=404, detail="Evidence not found")
-    event = CustodyEvent(id=str(uuid4()), evidence_id=evidence_id, **payload.model_dump())
+    data = payload.model_dump()
+    metadata = data.pop("metadata")
+    event = CustodyEvent(id=str(uuid4()), evidence_id=evidence_id, metadata_json=json.dumps(metadata or {}, default=str), **data)
     db.add(event)
     db.commit()
     db.refresh(event)

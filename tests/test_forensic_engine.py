@@ -60,3 +60,37 @@ def test_analysis_endpoint_runs_engine(tmp_path: Path) -> None:
     body = response.json()
     assert body["result"]["status"] == "completed"
     assert body["result"]["integrity"]["verified"] is True
+
+
+def test_upload_creates_hashes_and_custody_events() -> None:
+    with TestClient(app) as client:
+        case = client.post("/cases", json={"title": "Upload integrity test"})
+        case_id = case.json()["id"]
+        response = client.post("/evidence/upload/" + case_id, files={"file": ("upload.bin", b"upload bytes", "application/octet-stream")})
+        assert response.status_code == 201
+        evidence = response.json()
+        assert evidence["sha256"]
+        assert evidence["md5"]
+        assert evidence["size_bytes"] == 12
+        events = client.get("/custody/" + evidence["id"]).json()
+        assert {event["action"] for event in events} >= {"EVIDENCE_UPLOADED", "HASH_CALCULATED"}
+
+
+def test_modified_acquired_evidence_is_compromised() -> None:
+    with TestClient(app) as client:
+        case = client.post("/cases", json={"title": "Modification integrity test"})
+        evidence_response = client.post("/evidence/upload/" + case.json()["id"], files={"file": ("modify.bin", b"original bytes", "application/octet-stream")})
+        evidence_id = evidence_response.json()["id"]
+        assert client.post("/analysis/run", json={"evidence_id": evidence_id}).status_code == 200
+        acquired_path = Path(client.get("/evidence/" + case.json()["id"]).json()[0]["acquired_path"])
+        acquired_path.write_bytes(b"modified bytes")
+        verification = client.get("/verification/" + evidence_id)
+        assert verification.status_code == 200
+        assert verification.json()["status"] == "INTEGRITY_COMPROMISED"
+        assert verification.json()["verified"] is False
+
+
+def test_missing_evidence_verification_returns_error() -> None:
+    with TestClient(app) as client:
+        response = client.get("/verification/does-not-exist")
+    assert response.status_code == 404

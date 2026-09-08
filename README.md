@@ -26,6 +26,14 @@ Upload evidence with `POST /evidence/upload/{case_id}`, then run the pipeline wi
 
 For local processing without a database evidence record, `evidence_path` may be supplied instead.
 
+## Evidence integrity and chain of custody
+
+Evidence upload creates a unique evidence ID, streams the uploaded bytes into the evidence store, and records the original reference, UTC acquisition timestamp, size, SHA-256, and MD5. The backend automatically records `EVIDENCE_UPLOADED` and `HASH_CALCULATED` custody events.
+
+When analysis runs for a stored evidence ID, the backend records acquisition and analysis events, copies the evidence into `storage/forensic_images/`, verifies the acquired SHA-256 against the original, and stores the acquired path/hash and integrity status. A mismatch is recorded as `INTEGRITY_COMPROMISED` and stops further forensic extraction.
+
+Re-verify an acquired item with `GET /verification/{evidence_id}`. The endpoint hashes the acquired file currently on disk and returns `VERIFIED` or `INTEGRITY_COMPROMISED`. Missing evidence or missing acquired copies return clear HTTP errors. Chain-of-custody records are created by the backend; clients do not need to submit them.
+
 ## Supported formats and limitations
 
 Common video extensions (`.mp4`, `.avi`, `.mkv`, `.mov`, `.h264`, `.h265`, `.ts`, `.m2ts`, `.webm`) are passed through FFmpeg when it is installed and the file validates. `.dav` and other proprietary DVR formats are reported as unsupported unless a validated vendor parser is implemented. Current Dahua, Hikvision, CP Plus, Uniview, Honeywell, and Matrix adapters provide the parser contract and safe unsupported responses; they do not fabricate proprietary filesystem results.

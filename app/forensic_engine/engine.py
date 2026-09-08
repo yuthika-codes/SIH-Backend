@@ -38,6 +38,22 @@ class ForensicEngine:
         device = self.device_identifier.identify(path)
         filesystem = self.filesystem.analyze(path)
         acquisition = self.acquisition.acquire(path, self.storage_root / "forensic_images")
+        if acquisition.get("status") == "INTEGRITY_COMPROMISED":
+            return {
+                "status": "INTEGRITY_COMPROMISED",
+                "evidence": {"path": str(path), "exists": True},
+                "device": device,
+                "filesystem": filesystem,
+                "acquisition": acquisition,
+                "videos": [],
+                "metadata": [],
+                "timeline": [],
+                "integrity": {
+                    "sha256": acquisition.get("original_sha256"),
+                    "md5": acquisition.get("original_md5"),
+                    "verified": False,
+                },
+            }
         processing_path = Path(str(acquisition.get("acquired_path", path))) if acquisition.get("status") == "completed" else path
         parser = self._select_parser(path)
         parser_result = parser.parse(path)

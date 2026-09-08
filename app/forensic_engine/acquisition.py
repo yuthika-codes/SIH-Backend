@@ -24,7 +24,7 @@ class AcquisitionService:
             acquired = calculate_file_hashes(target)
             integrity_verified = verify_sha256(target, str(original["sha256"]))
             return {
-                "status": "completed" if integrity_verified else "error",
+                "status": "completed" if integrity_verified else "INTEGRITY_COMPROMISED",
                 "source_path": str(source),
                 "acquired_path": str(target),
                 "original_sha256": original["sha256"],
@@ -32,6 +32,7 @@ class AcquisitionService:
                 "size_bytes": original["size_bytes"],
                 "acquired_sha256": acquired["sha256"],
                 "integrity_verified": integrity_verified,
+                "integrity_status": "VERIFIED" if integrity_verified else "INTEGRITY_COMPROMISED",
             }
         except (OSError, PermissionError) as exc:
             return {"status": "error", "path": str(source), "error": str(exc)}
