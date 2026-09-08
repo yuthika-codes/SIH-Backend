@@ -138,11 +138,27 @@ def test_embedded_mp4_is_carved_with_offset_and_provenance(tmp_path: Path, monke
     assert len(artifacts) == 1
     artifact = artifacts[0]
     assert artifact["source_offset"] == len(prefix)
-    assert artifact["method"] == "signature_scan"
+    assert artifact["method"] == "signature_carving"
     assert artifact["source_path"] == str(raw)
     assert artifact["sha256"] == calculate_sha256(artifact["output_path"])
     assert Path(artifact["output_path"]).parent == recovered
+    assert Path(artifact["output_path"]).read_bytes() == payload
     assert raw.read_bytes() == prefix + payload + b"trailer"
+
+
+def test_embedded_mp4_has_priority_over_h264_like_prefix(tmp_path: Path, monkeypatch) -> None:
+    acquired = tmp_path / "forensic_images"
+    acquired.mkdir()
+    raw = acquired / "raw.bin"
+    prefix = b"\x00\x00\x01\x67\x00\x00\x01\x65" + b"prefix" * 20
+    payload = (24).to_bytes(4, "big") + b"ftypisom" + b"payload-data"
+    raw.write_bytes(prefix + payload + b"suffix")
+    monkeypatch.setattr(recovery_module, "extract_metadata", _mock_valid_probe)
+    artifacts = RecoveryEngine(acquired, tmp_path / "recovered").recover(raw)["artifacts"]
+    assert len(artifacts) == 1
+    assert artifacts[0]["detected_format"] == "mp4"
+    assert artifacts[0]["source_offset"] == len(prefix)
+    assert artifacts[0]["method"] == "signature_carving"
 
 
 def test_multiple_embedded_candidates_are_reported(tmp_path: Path, monkeypatch) -> None:
